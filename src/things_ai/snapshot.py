@@ -1211,14 +1211,200 @@ def format_heading_reference(reference: tuple[str | None, str | None, str]) -> s
     return " / ".join(str(part) for part in parts)
 
 
+def build_restore_reconcile_plan(
+    archive_snapshot: dict[str, Any],
+    current_snapshot: dict[str, Any],
+    capabilities: dict[str, Any],
+    *,
+    trash_area_uuid: str | None = None,
+    trash_area_title: str | None = None,
+    trash_project_uuid: str | None = None,
+    trash_project_title: str | None = "Trash",
+) -> dict[str, Any]:
+    archive_projects = snapshot_collection_items(archive_snapshot, "projects")
+    current_projects = snapshot_collection_items(current_snapshot, "projects")
+    archive_todos = snapshot_collection_items(archive_snapshot, "todos")
+    current_todos = snapshot_collection_items(current_snapshot, "todos")
+
+    current_project_index = build_project_match_index(current_projects)
+    missing_projects = [
+        project for project in archive_projects if resolve_unique_project_match(project, current_project_index) is None
+    ]
+
+    current_todo_index = build_todo_match_index(current_todos)
+    archive_todo_index = build_todo_match_index(archive_todos)
+    missing_todos = [todo for todo in archive_todos if resolve_unique_todo_match(todo, current_todo_index) is None]
+    extra_current_todos = [todo for todo in current_todos if resolve_unique_todo_match(todo, archive_todo_index) is None]
+
+    ready_actions: list[dict[str, Any]] = []
+    blocked_actions: list[dict[str, Any]] = []
+    missing_project_labels = {
+        label
+        for project in missing_projects
+        if isinstance(project, dict)
+        for label in (project.get("uuid"), project.get("title"))
+        if label not in (None, "")
+    }
+
+    for project in missing_projects:
+        action = compact({"action": "create-project", **restore_project_reference(project)})
+        if capabilities.get("can_create_projects"):
+            ready_actions.append(action)
+        else:
+            blocked_actions.append({**action, "blocked_reason": "Current Things MCP tools do not expose project creation."})
+
+    for todo in missing_todos:
+        action = compact({"action": "create-todo", **restore_todo_reference(todo)})
+        relationships = todo.get("relationships")
+        if not isinstance(relationships, dict):
+            relationships = {}
+        referenced_project = relationships.get("project_uuid") or relationships.get("project_title")
+        if not capabilities.get("can_create_todos"):
+            blocked_actions.append({**action, "blocked_reason": "Current Things MCP tools do not expose to-do creation."})
+        elif referenced_project in missing_project_labels and not capabilities.get("can_create_projects"):
+            blocked_actions.append(
+                {
+                    **action,
+                    "blocked_reason": "This archived to-do depends on a missing project, but project creation is unavailable.",
+                }
+            )
+        else:
+            ready_actions.append(action)
+
+    return compact(
+        {
+            "summary": {
+                "missing_project_count": len(missing_projects),
+                "missing_todo_count": len(missing_todos),
+                "extra_current_todo_count": len(extra_current_todos),
+                "ready_action_count": len(ready_actions),
+                "blocked_action_count": len(blocked_actions),
+            },
+            "trash_destination": {
+                "area_uuid": trash_area_uuid,
+                "area_title": trash_area_title,
+                "project_uuid": trash_project_uuid,
+                "project_title": trash_project_title,
+            },
+            "missing_projects": [restore_project_reference(project) for project in missing_projects[:25]],
+            "missing_todos": [restore_todo_reference(todo) for todo in missing_todos[:25]],
+            "extra_current_todos": [restore_todo_reference(todo) for todo in extra_current_todos[:25]],
+            "ready_actions": ready_actions[:50],
+            "blocked_actions": blocked_actions[:50],
+        }
+    )
+
+
+def snapshot_collection_items(snapshot: dict[str, Any], label: str) -> list[dict[str, Any]]:
+    normalized = snapshot.get("normalized")
+    if not isinstance(normalized, dict):
+        return []
+    items = normalized.get(label)
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def build_todo_match_index(todos: list[dict[str, Any]]) -> dict[tuple[Any, ...], list[dict[str, Any]]]:
+    index: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for todo in todos:
+        if not isinstance(todo, dict):
+            continue
+        for key in todo_match_keys(todo):
+            index.setdefault(key, []).append(todo)
+    return index
+
+
+def resolve_unique_todo_match(
+    todo: dict[str, Any], todo_index: dict[tuple[Any, ...], list[dict[str, Any]]]
+) -> dict[str, Any] | None:
+    for key in todo_match_keys(todo):
+        matches = todo_index.get(key, [])
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            return None
+    return None
+
+
+def todo_match_keys(todo: dict[str, Any]) -> list[tuple[Any, ...]]:
+    keys: list[tuple[Any, ...]] = []
+    uuid = todo.get("uuid")
+    if uuid not in (None, ""):
+        keys.append(("uuid", uuid))
+
+    title = todo.get("title")
+    if title in (None, ""):
+        return keys
+
+    relationships = todo.get("relationships")
+    if not isinstance(relationships, dict):
+        relationships = {}
+
+    project_scopes = relationship_scope_options(relationships, "project")
+    area_scopes = relationship_scope_options(relationships, "area")
+    heading_scopes = relationship_scope_options(relationships, "heading")
+    for project_scope in project_scopes:
+        for area_scope in area_scopes:
+            for heading_scope in heading_scopes:
+                key = ("title", title, project_scope, area_scope, heading_scope)
+                if key not in keys:
+                    keys.append(key)
+    return keys
+
+
+def relationship_scope_options(relationships: dict[str, Any], prefix: str) -> list[Any]:
+    scopes: list[Any] = []
+    for candidate in (relationships.get(f"{prefix}_uuid"), relationships.get(f"{prefix}_title"), None):
+        if candidate not in scopes:
+            scopes.append(candidate)
+    return scopes
+
+
+def restore_project_reference(project: dict[str, Any]) -> dict[str, Any]:
+    relationships = project.get("relationships")
+    if not isinstance(relationships, dict):
+        relationships = {}
+    return compact(
+        {
+            "uuid": project.get("uuid"),
+            "title": project.get("title"),
+            "area_uuid": relationships.get("area_uuid"),
+            "area_title": relationships.get("area_title"),
+        }
+    )
+
+
+def restore_todo_reference(todo: dict[str, Any]) -> dict[str, Any]:
+    relationships = todo.get("relationships")
+    if not isinstance(relationships, dict):
+        relationships = {}
+    return compact(
+        {
+            "uuid": todo.get("uuid"),
+            "title": todo.get("title"),
+            "project_uuid": relationships.get("project_uuid"),
+            "project_title": relationships.get("project_title"),
+            "area_uuid": relationships.get("area_uuid"),
+            "area_title": relationships.get("area_title"),
+            "heading_uuid": relationships.get("heading_uuid"),
+            "heading_title": relationships.get("heading_title"),
+        }
+    )
+
+
 def build_restore_blocking_reasons(
     capabilities: dict[str, Any],
     *,
     archive_summary: dict[str, Any],
     missing_area_titles: list[str],
     missing_heading_refs: list[tuple[str | None, str | None, str]],
+    reconcile_plan: dict[str, Any] | None = None,
 ) -> list[str]:
     reasons: list[str] = []
+    reconcile_summary = (reconcile_plan or {}).get("summary")
+    if not isinstance(reconcile_summary, dict):
+        reconcile_summary = {}
     if not capabilities.get("can_delete_existing_items"):
         reasons.append(
             "Current Things MCP tools do not expose delete/archive/trash mutations, so the CLI cannot wipe existing Things data before rebuild."
@@ -1239,10 +1425,18 @@ def build_restore_blocking_reasons(
         reasons.append(
             f"The archive references {len(missing_heading_refs)} heading location(s) that are not present in the current snapshot."
         )
+    blocked_action_count = int(reconcile_summary.get("blocked_action_count") or 0)
+    if blocked_action_count:
+        reasons.append(f"{blocked_action_count} reconcile action(s) are blocked by current tool or structure limitations.")
     return reasons
 
 
-def build_restore_next_steps(capabilities: dict[str, Any]) -> list[str]:
+def build_restore_next_steps(
+    capabilities: dict[str, Any], *, reconcile_plan: dict[str, Any] | None = None, apply: bool = False
+) -> list[str]:
+    reconcile_summary = (reconcile_plan or {}).get("summary")
+    if not isinstance(reconcile_summary, dict):
+        reconcile_summary = {}
     steps = [
         "Treat this command as a restore preflight: review the generated plan JSON/Markdown before making any manual changes.",
         "Keep the pre-restore safety backup so you can compare current state against the requested archive.",
@@ -1251,8 +1445,49 @@ def build_restore_next_steps(capabilities: dict[str, Any]) -> list[str]:
         steps.append("Do not attempt a destructive reset from this CLI yet; the current MCP tool surface cannot remove existing items.")
     if not capabilities.get("can_create_areas") or not capabilities.get("can_create_headings"):
         steps.append("If full restore becomes necessary, the MCP layer will need create-area/create-heading support first.")
+    ready_action_count = int(reconcile_summary.get("ready_action_count") or 0)
+    blocked_action_count = int(reconcile_summary.get("blocked_action_count") or 0)
+    if ready_action_count:
+        steps.append(f"Review the {ready_action_count} ready reconcile action(s) before relying on any automated restore steps.")
+    if blocked_action_count:
+        steps.append(
+            f"Resolve the {blocked_action_count} blocked reconcile action(s) by filling structure gaps or expanding MCP capabilities."
+        )
+    if apply:
+        steps.append(
+            "This apply run did not perform destructive restore automation; use the recorded reconcile plan as a manual checklist until execution support improves."
+        )
     steps.append("Use the archive as a durable read-only backup and manual reconstruction reference until restore capabilities improve.")
     return steps
+
+
+def execute_restore_actions(restore_plan: dict[str, Any], *, command_text: str | None = None) -> dict[str, Any]:
+    reconcile = restore_plan.get("reconcile")
+    if not isinstance(reconcile, dict):
+        reconcile = {}
+    ready_actions = reconcile.get("ready_actions")
+    if not isinstance(ready_actions, list):
+        ready_actions = []
+    blocked_actions = reconcile.get("blocked_actions")
+    if not isinstance(blocked_actions, list):
+        blocked_actions = []
+    return compact(
+        {
+            "schema_version": "things-ai.restore-execution.v1",
+            "generated_at": now_utc(),
+            "transport": "stdio",
+            "command": command_text or "uvx things-mcp",
+            "attempted_action_count": 0,
+            "applied_action_count": 0,
+            "failed_action_count": 0,
+            "skipped_action_count": len(ready_actions) + len(blocked_actions),
+            "notes": [
+                "Automated restore execution is not implemented yet; this apply run recorded reconcile data without mutating Things."
+            ],
+            "ready_action_samples": ready_actions[:10],
+            "blocked_action_samples": blocked_actions[:10],
+        }
+    )
 
 
 def normalize_archive_reference_date(reference: str) -> str | None:

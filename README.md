@@ -1,6 +1,6 @@
-## Things + AI Notebook Lab
+## Things 3 + AI
 
-Personal automation project for syncing with and organizing Things 3 with Things MCP, optional Python notebooks, and LLM-assisted workflows.
+Local-first automation project for working with Things 3 through Things MCP, with a Python CLI, durable archive artifacts, and LLM-assisted review workflows.
 
 ### Current priorities
 
@@ -30,6 +30,12 @@ Use the repo-local wrapper:
 
 The wrapper calls the existing `things_ai` CLI from this repo without requiring packaging first.
 
+### Local development
+
+- Run the CLI through the repo wrapper: `./things --help`
+- Run the test suite with: `PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py'`
+- Generated local artifacts under `data/` are intentionally ignored by Git
+
 ### Implemented capabilities
 
 - Export normalized Things snapshots to JSON and Markdown under `data/`
@@ -45,6 +51,7 @@ The wrapper calls the existing `things_ai` CLI from this repo without requiring 
 
 - `archive` is implemented as a real durable export capability
 - `restore` currently means restore **preflight + reconcile planning + safety backup**
+- `restore --apply` currently records execution metadata only; destructive restore automation is not implemented yet
 - Full destructive wipe-and-rebuild restore is **not** implemented yet because the current Things MCP surface does not expose the full delete/archive/structure-creation capabilities required for that safely
 
 ### Near-term implementation target

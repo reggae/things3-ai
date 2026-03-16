@@ -319,6 +319,69 @@ class TaskStoreTests(unittest.TestCase):
             self.assertIn("Need to reconcile the pricing language.", task_markdown)
             self.assertNotIn("THIS SHOULD NOT SURVIVE", task_markdown)
 
+    def test_open_task_polish_normalizes_combined_single_actions_home_for_project_items(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            list_tasks(
+                output_dir=Path(tmpdir),
+                today_items=sample_today_items(),
+                inbox_items=sample_inbox_items(),
+                available_tools=["get_today", "get_inbox"],
+            )
+
+            polished_document = "\n".join(
+                [
+                    "```markdown",
+                    "# Price Detection for Delivery - Base Price + Current Margin",
+                    "",
+                    "- key: T-001",
+                    "- state: proposed",
+                    "- kind: project",
+                    "- area: Product",
+                    "- project: Product / Single Actions",
+                    "- tags: docs",
+                    "- source_uuid: todo-1",
+                    "",
+                    "## Outcome",
+                    "",
+                    "Delivery and Sales have signed off on the logic.",
+                    "",
+                    "## Next Action",
+                    "",
+                    "Document the full logic and equations.",
+                    "",
+                    "## Steps",
+                    "",
+                    "Review with Joao\nPresent to Delivery and Sales",
+                    "",
+                    "## Notes",
+                    "",
+                    "Keep the underlying assumptions visible.",
+                    "",
+                    "## Original Capture",
+                    "",
+                    "Price Detection for Delivery - Base Price + Current Margin",
+                    "",
+                    "https://example.test/spec-sheet",
+                    "```",
+                ]
+            )
+
+            result = open_task(
+                output_dir=Path(tmpdir),
+                selector="1",
+                editor_func=lambda path: None,
+                input_func=lambda prompt: "",
+                polish_func=lambda item, document: polished_document,
+            )
+
+            task_json = json.loads(Path(tmpdir, "tasks", "items", "T-001.json").read_text(encoding="utf-8"))
+            task_markdown = Path(tmpdir, "tasks", "items", "T-001.md").read_text(encoding="utf-8")
+
+            self.assertEqual(result["task"]["area"], "Product")
+            self.assertEqual(result["task"]["project"], "Price Detection for Delivery - Base Price + Current Margin")
+            self.assertEqual(task_json["project"], "Price Detection for Delivery - Base Price + Current Margin")
+            self.assertIn("- project: Price Detection for Delivery - Base Price + Current Margin", task_markdown)
+
     def test_accept_task_creates_fallback_single_actions_home_and_marks_item_active(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             list_tasks(
@@ -453,3 +516,77 @@ class TaskStoreTests(unittest.TestCase):
             self.assertIn("Final Kind: project", result["rendered"])
             self.assertIn("Project Title: Pricing Cleanup", result["rendered"])
             self.assertIn("Additional steps kept in notes for now: yes", result["rendered"])
+
+    def test_accept_task_recovers_project_title_from_single_actions_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            list_tasks(
+                output_dir=Path(tmpdir),
+                today_items=sample_today_items(),
+                inbox_items=sample_inbox_items(),
+                available_tools=["get_today", "get_inbox"],
+            )
+
+            item_path = Path(tmpdir, "tasks", "items", "T-001.json")
+            doc_path = Path(tmpdir, "tasks", "items", "T-001.md")
+            item = json.loads(item_path.read_text(encoding="utf-8"))
+            item["title"] = "Price Detection for Delivery - Base Price + Current Margin"
+            item["kind"] = "project"
+            item["area"] = "Product"
+            item["project"] = "Product / Single Actions"
+            item["state"] = "proposed"
+            item_path.write_text(json.dumps(item, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            doc_path.write_text(
+                "\n".join(
+                    [
+                        "# Price Detection for Delivery - Base Price + Current Margin",
+                        "",
+                        "- key: T-001",
+                        "- state: proposed",
+                        "- kind: project",
+                        "- area: Product",
+                        "- project: Product / Single Actions",
+                        "- tags: docs",
+                        f"- source_uuid: {item['source_uuid']}",
+                        "",
+                        "## Outcome",
+                        "",
+                        "Delivery and Sales have signed off on the logic.",
+                        "",
+                        "## Next Action",
+                        "",
+                        "Document the full logic and equations.",
+                        "",
+                        "## Steps",
+                        "",
+                        "Review with Joao\nPresent to Delivery and Sales",
+                        "",
+                        "## Notes",
+                        "",
+                        "Keep the underlying assumptions visible.",
+                        "",
+                        "## Original Capture",
+                        "",
+                        "Price Detection for Delivery - Base Price + Current Margin",
+                        "",
+                        "https://example.test/spec-sheet",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            created_projects: list[dict[str, object]] = []
+            updated_todos: list[dict[str, object]] = []
+            result = accept_task(
+                output_dir=Path(tmpdir),
+                selector="1",
+                create_project_func=lambda **kwargs: created_projects.append(kwargs) or {"status": "created"},
+                update_todo_func=lambda **kwargs: updated_todos.append(kwargs) or {"status": "updated"},
+                project_lookup_func=lambda area_title, project_title, command_text: None,
+            )
+
+            task_json = json.loads(item_path.read_text(encoding="utf-8"))
+            self.assertEqual(task_json["project"], "Price Detection for Delivery - Base Price + Current Margin")
+            self.assertEqual(created_projects[0]["title"], "Price Detection for Delivery - Base Price + Current Margin")
+            self.assertEqual(updated_todos[0]["move_project_title"], "Price Detection for Delivery - Base Price + Current Margin")
+            self.assertIn("Project Title: Price Detection for Delivery - Base Price + Current Margin", result["rendered"])

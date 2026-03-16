@@ -14,6 +14,7 @@ TASK_INDEX_SCHEMA_VERSION = "things-ai.task-index.v1"
 TASK_ITEM_SCHEMA_VERSION = "things-ai.task-item.v1"
 TASK_SELECTION_SCHEMA_VERSION = "things-ai.task-selection.v1"
 REVIEWABLE_STATES = ("new", "reviewing", "proposed", "active")
+SINGLE_ACTIONS_PROJECT_TITLE = "Single Actions"
 ROW_WIDTH = 100
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TASK_AI_POLISH_PROMPT_PATH = REPO_ROOT / "prompts" / "task-ai-polish.md"
@@ -742,16 +743,8 @@ def apply_ai_polish(
         raise ValueError("AI polish returned an empty document")
     polished = parse_task_document_text(polished_text, item=item)
 
-    updated_item = dict(item)
+    updated_item = apply_document_edits_to_item(item=item, parsed=polished)
     updated_item["title"] = polished.get("title") or updated_item.get("title") or updated_item.get("source_title") or "(untitled)"
-    metadata = polished.get("metadata") if isinstance(polished.get("metadata"), dict) else {}
-    kind = clean_text(metadata.get("kind"))
-    if kind:
-        updated_item["kind"] = kind
-    if "area" in metadata:
-        updated_item["area"] = clean_text(metadata.get("area"))
-    if "project" in metadata:
-        updated_item["project"] = clean_text(metadata.get("project"))
     updated_item["state"] = "proposed"
     updated_item["updated_at"] = now_utc()
     updated_item["polished_at"] = updated_item["updated_at"]
@@ -779,10 +772,16 @@ def apply_document_edits_to_item(*, item: dict[str, Any], parsed: dict[str, Any]
     kind = clean_text(metadata.get("kind"))
     if kind:
         updated_item["kind"] = kind
-    if "area" in metadata:
-        updated_item["area"] = clean_text(metadata.get("area"))
-    if "project" in metadata:
-        updated_item["project"] = clean_text(metadata.get("project"))
+    normalized_area, normalized_project = normalize_area_project_metadata(
+        kind=clean_text(updated_item.get("kind")),
+        title=clean_text(updated_item.get("title")),
+        area=clean_text(metadata.get("area")) if "area" in metadata else clean_text(updated_item.get("area")),
+        project=clean_text(metadata.get("project")) if "project" in metadata else clean_text(updated_item.get("project")),
+    )
+    if "area" in metadata or normalized_area != clean_text(updated_item.get("area")):
+        updated_item["area"] = normalized_area
+    if "project" in metadata or normalized_project != clean_text(updated_item.get("project")):
+        updated_item["project"] = normalized_project
     return updated_item
 
 
@@ -791,10 +790,15 @@ def accepted_kind(item: dict[str, Any]) -> str:
 
 
 def accepted_project_title(*, item: dict[str, Any], kind: str) -> str:
-    project = clean_text(item.get("project"))
+    _, project = normalize_area_project_metadata(
+        kind=kind,
+        title=clean_text(item.get("title")),
+        area=clean_text(item.get("area")),
+        project=clean_text(item.get("project")),
+    )
     if kind == "project":
         return project or clean_text(item.get("title")) or "Untitled Project"
-    return project or "Single Actions"
+    return project or SINGLE_ACTIONS_PROJECT_TITLE
 
 
 def accepted_next_action(*, item: dict[str, Any], sections: dict[str, str]) -> str:
@@ -958,6 +962,34 @@ def clean_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def normalize_area_project_metadata(*, kind: str, title: str, area: str, project: str) -> tuple[str, str]:
+    normalized_area = clean_text(area)
+    normalized_project = clean_text(project)
+
+    split_area, split_project = split_home_path(normalized_project)
+    if split_project:
+        if not normalized_area:
+            normalized_area = split_area
+        normalized_project = split_project
+
+    if clean_text(kind).lower() == "project" and is_single_actions_project(normalized_project):
+        normalized_project = clean_text(title)
+
+    return normalized_area, normalized_project
+
+
+def split_home_path(value: str) -> tuple[str, str]:
+    cleaned = clean_text(value)
+    if " / " not in cleaned:
+        return "", cleaned
+    left, right = cleaned.split(" / ", 1)
+    return clean_text(left), clean_text(right)
+
+
+def is_single_actions_project(value: str) -> bool:
+    return clean_text(value).lower() == SINGLE_ACTIONS_PROJECT_TITLE.lower()
+
+
 def normalize_review_kind(value: str) -> str:
     lowered = clean_text(value).lower()
     if lowered in {"task", "t", "single", "single-action", "single action"}:
@@ -1058,8 +1090,12 @@ def title_width(slot_text: str, key: str, home: str) -> int:
 
 
 def home_label(item: dict[str, Any]) -> str:
-    area = str(item.get("area") or "").strip()
-    project = str(item.get("project") or "").strip()
+    area, project = normalize_area_project_metadata(
+        kind=clean_text(item.get("kind")),
+        title=clean_text(item.get("title") or item.get("source_title")),
+        area=clean_text(item.get("area")),
+        project=clean_text(item.get("project")),
+    )
     return target_home_label(area=area, project=project)
 
 

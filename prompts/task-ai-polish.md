@@ -35,6 +35,10 @@ Your job is to turn a captured item into the clearest current working version of
 ### Editing rules
 
 - You may refine `Title`, `Outcome`, `Next Action`, `Steps`, `Notes`, `kind`, `area`, and `project`.
+- `area` should be only the area name, like `Work` or `Product`.
+- `project` should be only the project title, not a combined home path.
+- If the fallback home is needed for a single action, use `area: Product` plus `project: Single Actions`, not `project: Product / Single Actions`.
+- If `kind = project`, do not use `Single Actions` as the project title; use the real project name instead.
 - Preserve `Original Capture` exactly.
 - Preserve concrete details, links, dates, constraints, and named tools unless clearly irrelevant.
 - Be conservative when rewriting `Notes`; improve structure without erasing useful nuance.

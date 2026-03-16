@@ -20,19 +20,27 @@ Local-first automation project for working with Things 3 through Things MCP, wit
 - `docs/task-processing-workflow-v1.md` — locked v1 task-processing interaction model
 - `prompts/task-ai-polish.md` — editable AI polish prompt for GTD-shaped item refinement
 
-### Current CLI entrypoint
+### CLI entrypoints
 
-Use the repo-local wrapper:
+Preferred portable install:
+
+- `python3 -m pip install -e .`
+- `things --help`
+- `things task next`
+
+This installs a real `things` command from the repo, which is the best option if you want the same workflow on multiple computers.
+
+The repo-local wrapper still works too:
 
 - `./things --help`
 - `./things archive`
 - `./things restore --archive 20260309`
 
-The wrapper calls the existing `things_ai` CLI from this repo without requiring packaging first.
-
 ### Local development
 
-- Run the CLI through the repo wrapper: `./things --help`
+- Install the editable CLI with: `python3 -m pip install -e .`
+- Run the installed CLI with: `things --help`
+- The repo wrapper remains available: `./things --help`
 - Run the test suite with: `PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py'`
 - Generated local artifacts under `data/` are intentionally ignored by Git
 

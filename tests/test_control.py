@@ -409,6 +409,66 @@ class CliCreateTaskTests(unittest.TestCase):
         self.assertNotIn("request_preview", rendered.get("llm", {}))
         self.assertNotIn("very large prompt body", stdout.getvalue())
 
+    @patch("things_ai.cli.list_tasks", return_value={"rendered": "# Things Tasks\n\n1 | 📎 Work | T-001 | Clarify\n"})
+    def test_main_task_list_renders_human_output(self, mock_list: object) -> None:
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            exit_code = main(["task", "list"])
+
+        self.assertEqual(exit_code, 0)
+        mock_list.assert_called_once_with(output_dir=Path("data"), command_text=None)
+        self.assertEqual(stdout.getvalue(), "# Things Tasks\n\n1 | 📎 Work | T-001 | Clarify\n")
+
+    @patch("things_ai.cli.next_task", return_value={"rendered": "1 | 📎 Work | T-001 | Clarify\n\nActions: r review\n"})
+    def test_main_task_next_forwards_output_dir_and_mcp_command(self, mock_next: object) -> None:
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            exit_code = main(["task", "next", "--output-dir", "scratch", "--mcp-command", "uvx custom-things"])
+
+        self.assertEqual(exit_code, 0)
+        mock_next.assert_called_once_with(output_dir=Path("scratch"), command_text="uvx custom-things")
+        self.assertIn("Actions: r review", stdout.getvalue())
+
+    @patch("things_ai.cli.show_task", return_value={"rendered": "2 | 📎 Home | T-002 | Coffee filters\n"})
+    def test_main_task_show_supports_selector(self, mock_show: object) -> None:
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            exit_code = main(["task", "show", "2", "--output-dir", "scratch"])
+
+        self.assertEqual(exit_code, 0)
+        mock_show.assert_called_once_with(output_dir=Path("scratch"), selector="2")
+        self.assertEqual(stdout.getvalue(), "2 | 📎 Home | T-002 | Coffee filters\n")
+
+    @patch("things_ai.cli.review_task", return_value={"rendered": "# Task Review\n\nKind: task\n"})
+    def test_main_task_review_supports_selector(self, mock_review: object) -> None:
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            exit_code = main(["task", "review", "2", "--output-dir", "scratch"])
+
+        self.assertEqual(exit_code, 0)
+        mock_review.assert_called_once_with(output_dir=Path("scratch"), selector="2")
+        self.assertEqual(stdout.getvalue(), "# Task Review\n\nKind: task\n")
+
+    @patch("things_ai.cli.open_task", return_value={"rendered": "# Task Open\n\nAI polish: skipped.\n"})
+    def test_main_task_open_supports_selector(self, mock_open: object) -> None:
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            exit_code = main(["task", "open", "2", "--output-dir", "scratch"])
+
+        self.assertEqual(exit_code, 0)
+        mock_open.assert_called_once_with(output_dir=Path("scratch"), selector="2")
+        self.assertEqual(stdout.getvalue(), "# Task Open\n\nAI polish: skipped.\n")
+
+    @patch("things_ai.cli.accept_task", return_value={"rendered": "# Task Accept\n\nFinal Kind: task\n"})
+    def test_main_task_accept_supports_selector_and_mcp_command(self, mock_accept: object) -> None:
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            exit_code = main(["task", "accept", "2", "--output-dir", "scratch", "--mcp-command", "uvx custom-things"])
+
+        self.assertEqual(exit_code, 0)
+        mock_accept.assert_called_once_with(output_dir=Path("scratch"), selector="2", command_text="uvx custom-things")
+        self.assertEqual(stdout.getvalue(), "# Task Accept\n\nFinal Kind: task\n")
+
     @patch("things_ai.cli.create_todo", return_value={"dry_run": True, "request": {"tool": "add_todo"}})
     def test_main_create_task_uses_dry_run_by_default(self, mock_create: object) -> None:
         stdout = io.StringIO()

@@ -30,6 +30,7 @@ from .snapshot import (
     plan_restore,
     write_inbox_question_set_artifacts,
 )
+from .tasks import accept_task, list_tasks, next_task, open_task, review_task, show_task
 
 
 def add_common_update_fields(parser: argparse.ArgumentParser) -> None:
@@ -316,6 +317,79 @@ def build_parser() -> argparse.ArgumentParser:
     )
     intake_propose_parser.add_argument("--mcp-command", help="Override THINGS_MCP_COMMAND")
 
+    task_parser = subparsers.add_parser(
+        "task",
+        help="Sync and inspect durable local task items backed by Things Today + Inbox",
+    )
+    task_subparsers = task_parser.add_subparsers(dest="task_command", required=True)
+
+    task_list_parser = task_subparsers.add_parser(
+        "list",
+        help="Sync Today + Inbox into the local task store and print compact reviewable rows",
+    )
+    task_list_parser.add_argument(
+        "--output-dir",
+        default="data",
+        help="Directory where the local task store should be written",
+    )
+    task_list_parser.add_argument("--mcp-command", help="Override THINGS_MCP_COMMAND")
+
+    task_next_parser = task_subparsers.add_parser(
+        "next",
+        help="Sync Today + Inbox, pick the next reviewable task, and show it immediately",
+    )
+    task_next_parser.add_argument(
+        "--output-dir",
+        default="data",
+        help="Directory where the local task store should be written",
+    )
+    task_next_parser.add_argument("--mcp-command", help="Override THINGS_MCP_COMMAND")
+
+    task_show_parser = task_subparsers.add_parser(
+        "show",
+        help="Show a durable local task by stable key or cached numbered slot",
+    )
+    task_show_parser.add_argument("selector", help="Stable key like T-001 or cached slot number like 1")
+    task_show_parser.add_argument(
+        "--output-dir",
+        default="data",
+        help="Directory where the local task store is written",
+    )
+
+    task_review_parser = task_subparsers.add_parser(
+        "review",
+        help="Run the structured task-vs-project interview for a durable local task item",
+    )
+    task_review_parser.add_argument("selector", help="Stable key like T-001 or cached slot number like 1")
+    task_review_parser.add_argument(
+        "--output-dir",
+        default="data",
+        help="Directory where the local task store is written",
+    )
+
+    task_open_parser = task_subparsers.add_parser(
+        "open",
+        help="Open a durable local task document in Vim, then optionally run AI polish",
+    )
+    task_open_parser.add_argument("selector", help="Stable key like T-001 or cached slot number like 1")
+    task_open_parser.add_argument(
+        "--output-dir",
+        default="data",
+        help="Directory where the local task store is written",
+    )
+
+    task_accept_parser = task_subparsers.add_parser(
+        "accept",
+        help="Apply a proposed durable task item back into Things and mark it active locally",
+    )
+    task_accept_parser.add_argument("selector", help="Stable key like T-001 or cached slot number like 1")
+    task_accept_parser.add_argument(
+        "--output-dir",
+        default="data",
+        help="Directory where the local task store is written",
+    )
+    task_accept_parser.add_argument("--mcp-command", help="Override THINGS_MCP_COMMAND")
+
     create_parser = subparsers.add_parser(
         "create-task",
         help="Prepare or create a task in Things using canonical area/project/heading selectors",
@@ -577,6 +651,32 @@ def main(argv: list[str] | None = None) -> int:
                 command_text=args.mcp_command,
             )
             print(json.dumps(build_intake_propose_cli_summary(result), indent=2, sort_keys=True))
+            return 0
+
+    if args.command == "task":
+        if args.task_command == "list":
+            result = list_tasks(output_dir=Path(args.output_dir), command_text=args.mcp_command)
+            print(result["rendered"], end="")
+            return 0
+        if args.task_command == "next":
+            result = next_task(output_dir=Path(args.output_dir), command_text=args.mcp_command)
+            print(result["rendered"], end="")
+            return 0
+        if args.task_command == "show":
+            result = show_task(output_dir=Path(args.output_dir), selector=args.selector)
+            print(result["rendered"], end="")
+            return 0
+        if args.task_command == "review":
+            result = review_task(output_dir=Path(args.output_dir), selector=args.selector)
+            print(result["rendered"], end="")
+            return 0
+        if args.task_command == "open":
+            result = open_task(output_dir=Path(args.output_dir), selector=args.selector)
+            print(result["rendered"], end="")
+            return 0
+        if args.task_command == "accept":
+            result = accept_task(output_dir=Path(args.output_dir), selector=args.selector, command_text=args.mcp_command)
+            print(result["rendered"], end="")
             return 0
 
     if args.command == "create-task":

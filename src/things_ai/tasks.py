@@ -5,16 +5,17 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
-from .control import create_project, create_todo, resolve_area, resolve_project, update_project, update_todo
+from .control import SelectionError, create_project, create_todo, resolve_area, resolve_project, update_project, update_todo
 from .llm_bridge import complete
 from .mcp import StdioMcpClient
-from .snapshot import fetch_snapshot, normalize_collection, now_utc, single_line
+from .snapshot import fetch_snapshot, normalize_collection, now_utc, parse_block_items, single_line
 
 TASK_INDEX_SCHEMA_VERSION = "things-ai.task-index.v1"
 TASK_ITEM_SCHEMA_VERSION = "things-ai.task-item.v1"
 TASK_SELECTION_SCHEMA_VERSION = "things-ai.task-selection.v1"
 REVIEWABLE_STATES = ("new", "reviewing", "proposed", "active")
 SINGLE_ACTIONS_PROJECT_TITLE = "Single Actions"
+NEXT_ACTION_TAG_NAME = "Next Action"
 ROW_WIDTH = 100
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TASK_AI_POLISH_PROMPT_PATH = REPO_ROOT / "prompts" / "task-ai-polish.md"
@@ -251,6 +252,9 @@ def accept_task(
     final_area = clean_text(updated_item.get("area"))
     project_title = accepted_project_title(item=updated_item, kind=final_kind)
     next_action = accepted_next_action(item=updated_item, sections=sections)
+    next_action_tags = accepted_next_action_tags(item=updated_item, kind=final_kind)
+    next_action_tagged = has_tag(next_action_tags, NEXT_ACTION_TAG_NAME)
+    project_step_titles = accepted_project_step_titles(sections=sections, next_action=next_action) if final_kind == "project" else []
     project_lookup = project_lookup_func or lookup_existing_project
 
     existing_project = project_lookup(final_area or None, project_title, command_text)
@@ -289,6 +293,8 @@ def accept_task(
         item=updated_item,
         next_action=next_action,
         notes=todo_notes or None,
+        when="anytime" if final_kind == "project" else None,
+        tags=next_action_tags,
         area_title=final_area or None,
         project=existing_project,
         project_title=project_title,
@@ -296,6 +302,21 @@ def accept_task(
         create_todo_func=create_todo_func or create_todo,
         update_todo_func=update_todo_func or update_todo,
     )
+
+    project_uuid = str(existing_project.get("uuid") or "") if isinstance(existing_project, dict) else ""
+    project_todo_results: list[dict[str, Any]] = []
+    if final_kind == "project":
+        for step_title in project_step_titles:
+            project_todo_results.append(
+                (create_todo_func or create_todo)(
+                    title=step_title,
+                    area_title=final_area or None,
+                    project_uuid=project_uuid or None,
+                    project_title=None if project_uuid else project_title,
+                    dry_run=False,
+                    command_text=command_text,
+                )
+            )
 
     updated_item["kind"] = final_kind
     updated_item["state"] = "active"
@@ -308,6 +329,11 @@ def accept_task(
         "target_home": target_home_label(area=final_area, project=project_title),
         "project_title": project_title if final_kind == "project" else None,
         "next_action": next_action,
+        "next_action_tagged": next_action_tagged,
+        "next_action_tags": next_action_tags or [],
+        "next_action_when": "anytime" if final_kind == "project" else None,
+        "project_todo_titles": project_step_titles,
+        "project_todos_created": len(project_todo_results),
         "steps_kept_in_notes": bool(clean_text(sections.get("Steps"))),
     }
 
@@ -318,11 +344,13 @@ def accept_task(
         "task": updated_item,
         "project_result": project_result,
         "todo_result": todo_result,
+        "project_todo_results": project_todo_results,
         "rendered": render_accept_summary(
             item=updated_item,
             slot=slot,
             next_action=next_action,
-            steps_kept_in_notes=bool(clean_text(sections.get("Steps"))),
+            next_action_tagged=next_action_tagged,
+            project_todos_created=len(project_todo_results),
         ),
     }
 
@@ -484,7 +512,14 @@ def render_task_detail(*, output_dir: Path, item: dict[str, Any], slot: int | No
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_accept_summary(*, item: dict[str, Any], slot: int | None, next_action: str, steps_kept_in_notes: bool) -> str:
+def render_accept_summary(
+    *,
+    item: dict[str, Any],
+    slot: int | None,
+    next_action: str,
+    next_action_tagged: bool,
+    project_todos_created: int,
+) -> str:
     final_kind = str(item.get("kind") or "task")
     project_title = clean_text(item.get("project"))
     lines = [
@@ -500,9 +535,11 @@ def render_accept_summary(*, item: dict[str, Any], slot: int | None, next_action
     lines.extend(
         [
             f"Next Action: {single_line(next_action)}",
-            f"Additional steps kept in notes for now: {'yes' if steps_kept_in_notes else 'no'}",
+            f"Next Action Tagged: {'yes' if next_action_tagged else 'no'}",
         ]
     )
+    if final_kind == "project":
+        lines.append(f"Additional Project Tasks Created: {project_todos_created}")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -811,6 +848,28 @@ def accepted_next_action(*, item: dict[str, Any], sections: dict[str, str]) -> s
     )
 
 
+def accepted_project_step_titles(*, sections: dict[str, str], next_action: str) -> list[str]:
+    seen = {normalized_text_key(next_action)}
+    titles: list[str] = []
+    for entry in parse_block_items(str(sections.get("Steps") or "")):
+        title = clean_text(entry.get("title"))
+        key = normalized_text_key(title)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        titles.append(title)
+    return titles
+
+
+def accepted_next_action_tags(*, item: dict[str, Any], kind: str) -> list[str] | None:
+    if kind != "project":
+        return None
+    tags = normalized_tags(item.get("tags"))
+    if has_tag(tags, NEXT_ACTION_TAG_NAME):
+        return tags
+    return [*tags, NEXT_ACTION_TAG_NAME]
+
+
 def build_accept_notes(*, sections: dict[str, str]) -> str:
     blocks: list[str] = []
     for name in ("Outcome", "Steps", "Notes", "Original Capture"):
@@ -826,7 +885,12 @@ def lookup_existing_project(area_title: str | None, project_title: str, command_
         return None
     snapshot = fetch_snapshot(command_text=command_text)
     area = resolve_area(snapshot, area_title=area_title) if area_title else None
-    return resolve_project(snapshot, project_title=project_title, area=area)
+    try:
+        return resolve_project(snapshot, project_title=project_title, area=area)
+    except SelectionError as error:
+        if str(error).startswith("No project matched selector"):
+            return None
+        raise
 
 
 def accept_source_todo(
@@ -834,6 +898,8 @@ def accept_source_todo(
     item: dict[str, Any],
     next_action: str,
     notes: str | None,
+    when: str | None,
+    tags: list[str] | None,
     area_title: str | None,
     project: dict[str, Any] | None,
     project_title: str,
@@ -848,6 +914,8 @@ def accept_source_todo(
             todo_uuid=source_uuid,
             title=next_action,
             notes=notes,
+            when=when,
+            tags=tags,
             move_area_title=area_title,
             move_project_uuid=project_uuid or None,
             move_project_title=None if project_uuid else project_title,
@@ -857,6 +925,8 @@ def accept_source_todo(
     return create_todo_func(
         title=next_action,
         notes=notes,
+        when=when,
+        tags=tags,
         area_title=area_title,
         project_uuid=project_uuid or None,
         project_title=None if project_uuid else project_title,
@@ -960,6 +1030,32 @@ def source_identity(item: dict[str, Any]) -> str:
 
 def clean_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def normalized_text_key(value: Any) -> str:
+    text = single_line(value)
+    collapsed = "".join(character.lower() if character.isalnum() else " " for character in text)
+    return " ".join(collapsed.split())
+
+
+def normalized_tags(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    tags: list[str] = []
+    seen: set[str] = set()
+    for raw_tag in value:
+        tag = clean_text(raw_tag)
+        key = tag.lower()
+        if not tag or key in seen:
+            continue
+        seen.add(key)
+        tags.append(tag)
+    return tags
+
+
+def has_tag(tags: list[str] | None, wanted: str) -> bool:
+    normalized_wanted = clean_text(wanted).lower()
+    return any(clean_text(tag).lower() == normalized_wanted for tag in tags or [])
 
 
 def normalize_area_project_metadata(*, kind: str, title: str, area: str, project: str) -> tuple[str, str]:

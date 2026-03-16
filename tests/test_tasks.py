@@ -4,8 +4,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from things_ai.tasks import accept_task, list_tasks, next_task, open_task, review_task, show_task, sync_task_store
+from things_ai.control import SelectionError
+from things_ai.tasks import accept_task, list_tasks, lookup_existing_project, next_task, open_task, review_task, show_task, sync_task_store
 
 
 def sample_today_items() -> list[dict[str, object]]:
@@ -425,11 +427,13 @@ class TaskStoreTests(unittest.TestCase):
             self.assertEqual(created_projects[0]["dry_run"], False)
             self.assertEqual(updated_todos[0]["todo_uuid"], "todo-2")
             self.assertEqual(updated_todos[0]["title"], "Buy coffee filters at the store")
+            self.assertIsNone(updated_todos[0]["when"])
+            self.assertIsNone(updated_todos[0]["tags"])
             self.assertEqual(updated_todos[0]["move_project_title"], "Single Actions")
             self.assertEqual(updated_todos[0]["move_area_title"], "Home")
             self.assertIn("# Task Accept", result["rendered"])
             self.assertIn("Target Home: 📎 Home / Single Actions", result["rendered"])
-            self.assertIn("Additional steps kept in notes for now: no", result["rendered"])
+            self.assertIn("Next Action Tagged: no", result["rendered"])
             self.assertIn("- state: active", task_markdown)
 
     def test_accept_task_ensures_project_and_updates_next_action_for_project_items(self) -> None:
@@ -495,11 +499,13 @@ class TaskStoreTests(unittest.TestCase):
             item_path.write_text(json.dumps(item, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
             created_projects: list[dict[str, object]] = []
+            created_todos: list[dict[str, object]] = []
             updated_todos: list[dict[str, object]] = []
             result = accept_task(
                 output_dir=Path(tmpdir),
                 selector="1",
                 create_project_func=lambda **kwargs: created_projects.append(kwargs) or {"status": "created"},
+                create_todo_func=lambda **kwargs: created_todos.append(kwargs) or {"status": "created"},
                 update_todo_func=lambda **kwargs: updated_todos.append(kwargs) or {"status": "updated"},
                 project_lookup_func=lambda area_title, project_title, command_text: None,
             )
@@ -512,10 +518,15 @@ class TaskStoreTests(unittest.TestCase):
             self.assertEqual(created_projects[0]["notes"].splitlines()[0], "Outcome")
             self.assertEqual(updated_todos[0]["todo_uuid"], "todo-1")
             self.assertEqual(updated_todos[0]["title"], "Draft the corrected pricing note and send it for review.")
+            self.assertEqual(updated_todos[0]["when"], "anytime")
+            self.assertEqual(updated_todos[0]["tags"], ["docs", "Next Action"])
             self.assertEqual(updated_todos[0]["move_project_title"], "Pricing Cleanup")
+            self.assertEqual([todo["title"] for todo in created_todos], ["Review the pricing deck", "Update the reference notes"])
+            self.assertTrue(all(todo["project_title"] == "Pricing Cleanup" for todo in created_todos))
             self.assertIn("Final Kind: project", result["rendered"])
             self.assertIn("Project Title: Pricing Cleanup", result["rendered"])
-            self.assertIn("Additional steps kept in notes for now: yes", result["rendered"])
+            self.assertIn("Next Action Tagged: yes", result["rendered"])
+            self.assertIn("Additional Project Tasks Created: 2", result["rendered"])
 
     def test_accept_task_recovers_project_title_from_single_actions_placeholder(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -576,11 +587,13 @@ class TaskStoreTests(unittest.TestCase):
             )
 
             created_projects: list[dict[str, object]] = []
+            created_todos: list[dict[str, object]] = []
             updated_todos: list[dict[str, object]] = []
             result = accept_task(
                 output_dir=Path(tmpdir),
                 selector="1",
                 create_project_func=lambda **kwargs: created_projects.append(kwargs) or {"status": "created"},
+                create_todo_func=lambda **kwargs: created_todos.append(kwargs) or {"status": "created"},
                 update_todo_func=lambda **kwargs: updated_todos.append(kwargs) or {"status": "updated"},
                 project_lookup_func=lambda area_title, project_title, command_text: None,
             )
@@ -588,5 +601,39 @@ class TaskStoreTests(unittest.TestCase):
             task_json = json.loads(item_path.read_text(encoding="utf-8"))
             self.assertEqual(task_json["project"], "Price Detection for Delivery - Base Price + Current Margin")
             self.assertEqual(created_projects[0]["title"], "Price Detection for Delivery - Base Price + Current Margin")
+            self.assertEqual(updated_todos[0]["when"], "anytime")
+            self.assertEqual(updated_todos[0]["tags"], ["docs", "Next Action"])
             self.assertEqual(updated_todos[0]["move_project_title"], "Price Detection for Delivery - Base Price + Current Margin")
+            self.assertEqual([todo["title"] for todo in created_todos], ["Review with Joao", "Present to Delivery and Sales"])
             self.assertIn("Project Title: Price Detection for Delivery - Base Price + Current Margin", result["rendered"])
+
+
+class LookupExistingProjectTests(unittest.TestCase):
+    def test_lookup_existing_project_returns_none_when_project_is_missing(self) -> None:
+        snapshot = {"normalized": {}}
+        area = {"title": "📎 Work", "uuid": "area-1"}
+        with (
+            patch("things_ai.tasks.fetch_snapshot", return_value=snapshot),
+            patch("things_ai.tasks.resolve_area", return_value=area),
+            patch(
+                "things_ai.tasks.resolve_project",
+                side_effect=SelectionError("No project matched selector {'title': 'Price and Cost Detection'}"),
+            ),
+        ):
+            result = lookup_existing_project("📎 Work", "Price and Cost Detection", None)
+
+        self.assertIsNone(result)
+
+    def test_lookup_existing_project_preserves_ambiguous_match_errors(self) -> None:
+        snapshot = {"normalized": {}}
+        area = {"title": "📎 Work", "uuid": "area-1"}
+        with (
+            patch("things_ai.tasks.fetch_snapshot", return_value=snapshot),
+            patch("things_ai.tasks.resolve_area", return_value=area),
+            patch(
+                "things_ai.tasks.resolve_project",
+                side_effect=SelectionError("Multiple projects matched selector {'title': 'Price and Cost Detection'}"),
+            ),
+        ):
+            with self.assertRaisesRegex(SelectionError, "Multiple projects matched selector"):
+                lookup_existing_project("📎 Work", "Price and Cost Detection", None)
